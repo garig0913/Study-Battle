@@ -2,9 +2,10 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom'
 
 function Arena() {
-  const { matchId } = useParams()
+  const { matchId: rawMatchId } = useParams()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
+  const matchId = rawMatchId.split('?')[0]
   const playerName = searchParams.get('player') || localStorage.getItem('playerName') || 'Player'
   
   const [connected, setConnected] = useState(false)

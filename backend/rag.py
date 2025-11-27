@@ -34,8 +34,8 @@ class RAGPipeline:
             logger.info("No OpenAI API key found, using default embeddings")
     
     def _get_vector_store(self, collection_name: str) -> Optional[MilvusVectorStore]:
-        zilliz_uri = os.environ.get("ZILLIZ_URI")
-        zilliz_token = os.environ.get("ZILLIZ_TOKEN")
+        zilliz_uri = os.environ.get("ZILLIZ_URI") or os.environ.get("Public_Endpoint")
+        zilliz_token = os.environ.get("ZILLIZ_TOKEN") or os.environ.get("zilliz_token")
         
         if zilliz_uri and zilliz_token:
             try:
