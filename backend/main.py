@@ -512,7 +512,22 @@ async def websocket_endpoint(websocket: WebSocket, match_id: str):
         }
     }))
     
-    if len(websocket_connections[match_id]) == 2 and match.status == "waiting":
+    # If match is already active, send ready state immediately
+    if match.status == "active":
+        await websocket.send_text(json.dumps({
+            "type": "match_ready",
+            "data": {
+                "players": {name: {"hp": p.hp} for name, p in match.players.items()}
+            }
+        }))
+        # If there's a current question, send it to the reconnected player
+        if match.current_question:
+            await websocket.send_text(json.dumps({
+                "type": "round_start",
+                "data": match.current_question.model_dump()
+            }))
+    # Otherwise check if we now have 2 players to start the match
+    elif len(websocket_connections[match_id]) == 2 and match.status == "waiting":
         match.status = "active"
         
         await broadcast_to_match(match_id, {
