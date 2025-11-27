@@ -15,6 +15,8 @@ class RAGPipeline:
         self.indices: Dict[str, VectorStoreIndex] = {}
         self.chunk_mappings: Dict[str, Dict[str, Dict]] = {}
         self._embedding_model = None
+        self._embedding_dim = 1536
+        self._use_rag = False
         self._initialize_embeddings()
     
     def _initialize_embeddings(self):
@@ -26,12 +28,14 @@ class RAGPipeline:
                     model="text-embedding-3-small"
                 )
                 Settings.embed_model = self._embedding_model
-                logger.info("Using OpenAI embeddings")
+                self._embedding_dim = 1536
+                self._use_rag = True
+                logger.info("Using OpenAI embeddings - RAG enabled")
+                return
             except Exception as e:
                 logger.warning(f"Failed to initialize OpenAI embeddings: {e}")
-                self._embedding_model = None
-        else:
-            logger.info("No OpenAI API key found, using default embeddings")
+        
+        logger.info("No OpenAI API key - using direct chunk retrieval instead of RAG")
     
     def _get_vector_store(self, collection_name: str) -> Optional[MilvusVectorStore]:
         zilliz_uri = os.environ.get("ZILLIZ_URI") or os.environ.get("Public_Endpoint")
@@ -43,7 +47,7 @@ class RAGPipeline:
                     uri=zilliz_uri,
                     token=zilliz_token,
                     collection_name=collection_name,
-                    dim=1536,
+                    dim=self._embedding_dim,
                     overwrite=False
                 )
                 logger.info(f"Connected to Zilliz Cloud: {collection_name}")
@@ -55,7 +59,7 @@ class RAGPipeline:
             vector_store = MilvusVectorStore(
                 uri="./milvus_data.db",
                 collection_name=collection_name,
-                dim=1536,
+                dim=self._embedding_dim,
                 overwrite=False
             )
             logger.info(f"Using local Milvus Lite: {collection_name}")

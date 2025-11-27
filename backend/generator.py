@@ -13,15 +13,15 @@ DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 GENERATE_PROBLEM_PROMPT = """You are a math/CS exam writer. ONLY use the provided context. DO NOT hallucinate outside it. Create ONE problem that is NEW but closely based on the examples and facts in the context. The problem must be solvable with the context.
 
 Output JSON ONLY with these exact keys (no markdown, no code blocks, just raw JSON):
-{
+{{
   "question_id": "<uuid>",
   "question_text": "...",
   "question_type": "mcq|short|calc|code",
   "options": ["A ...", "B ..."] OR null,
   "correct_answer": "...",
   "solution_steps": "...",
-  "source_chunks": [{"file_name":"", "page":1, "chunk_id": "...", "char_range":"start-end"}]
-}
+  "source_chunks": [{{"file_name":"", "page":1, "chunk_id": "...", "char_range":"start-end"}}]
+}}
 
 Requirements:
 - question_type must be one of: {question_types}
@@ -39,12 +39,12 @@ Context:
 VERIFY_ANSWER_PROMPT = """You are an objective grader. Use ONLY the context below and the official solution. Evaluate the student's submitted answer.
 
 Return JSON ONLY (no markdown, no code blocks):
-{
+{{
   "correct": true|false,
   "confidence": 0.0-1.0,
   "explanation": "...",
-  "citation": [{"file_name":"", "page":1, "chunk_id":"..."}]
-}
+  "citation": [{{"file_name":"", "page":1, "chunk_id":"..."}}]
+}}
 
 Context:
 {context}
