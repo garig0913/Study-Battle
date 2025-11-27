@@ -1,0 +1,280 @@
+Awesome — thanks for picking **Zilliz Cloud (Milvus)** + **DeepSeek**. Below is the **exact prompt** you can paste into Replit’s “Build an app” AI (or hand to a developer) to create a working, single-repl monolithic demo of your **Study-Battle** app. It includes everything: backend (FastAPI + LlamaIndex + Milvus/Zilliz Cloud), DeepSeek integration for generation & verification, real-time WebSocket battle logic, and a simple React frontend that two people can use on stage.
+
+> **Copy the whole block below and paste it into Replit’s build/assistant prompt.**
+> It’s been written to be explicit and prescriptive so the agent produces runnable code.
+
+---
+
+### Replit prompt — Build the Study-Battle RAG App (Monorepo)
+
+```
+Build a single Replit project (monorepo) implementing a working MVP of a "Study-Battle" app: users upload documents, the backend indexes them with LlamaIndex + Milvus (Zilliz Cloud), DeepSeek generates and verifies problems from retrieved document chunks, and a simple React frontend connects two players in a real-time WebSocket duel. This must be demo-ready (two users on stage, both online), simple UI but complete functionality.
+
+Requirements & constraints:
+- Single Repl project (backend + frontend in same repl).
+- Use Python (FastAPI) for backend.
+- Use LlamaIndex for the RAG pipeline (ingest / chunk / index).
+- Use Milvus via Zilliz Cloud (hosted Milvus) as the vector DB. Use pymilvus / llama-index-milvus connector.
+- Use DeepSeek as the generative LLM for:
+  1. Generating new but similar problems from retrieved chunks.
+  2. Solving/validating the generated problem to ensure correctness (server-side).
+- Use OpenAI text embeddings (or DeepSeek embed API if available) to create embeddings for vector indexing — assume an environment variable OPENAI_API_KEY may be present. If OpenAI key is not provided, fallback to LlamaIndex's default local embedding wrapper.
+- Use WebSockets (FastAPI WebSocket) for real-time duel events. Frontend uses native WebSocket.
+- No user authentication required for this demo — ephemeral sessions only.
+- Provide README with exact dev & run steps and a short on-stage demo script (how two people join & run a match).
+
+Environment variables expected:
+- ZILLIZ_URI (string) — Zilliz / Milvus endpoint (public endpoint)
+- ZILLIZ_TOKEN (string) — API token / key for Zilliz
+- DEEPSEEK_API_KEY (string) — DeepSeek API key
+- OPENAI_API_KEY (optional) — for embeddings (fallback if DeepSeek embeddings not used)
+- REPLIT_PORT (optional) — default 3000 for frontend dev proxy
+
+Project structure (create these files and folders):
+- /backend
+  - main.py (FastAPI server + WebSocket)
+  - rag.py (LlamaIndex ingestion, chunking, embedding, index wrapper)
+  - generator.py (DeepSeek prompt templates, generate & verify functions)
+  - models.py (Pydantic models for requests/responses)
+  - storage.py (file upload handling, text extraction utilities)
+  - requirements.txt
+  - start.sh (run uvicorn)
+- /frontend
+  - package.json (Vite + React)
+  - src/main.jsx
+  - src/App.jsx
+  - src/pages/Lobby.jsx
+  - src/pages/Upload.jsx
+  - src/pages/Arena.jsx
+  - src/ws.js (websocket helper)
+  - index.html
+- README.md
+- .env.example
+
+Backend details (FastAPI):
+1. Endpoints:
+   - POST /upload
+     - Accepts multipart/form-data with file(s) (PDF, DOCX, PPTX, TXT, PNG/JPG).
+     - Extract text (pdfplumber/fitz for PDF, python-docx for DOCX, python-pptx for PPTX). If image, run OCR (pytesseract) optionally.
+     - Chunk text: use ~500 token chunks with 50 token overlap. Save metadata for each chunk: {doc_id, file_name, page_number, chunk_id, char_offset}.
+     - Create embeddings and index chunks into Milvus via LlamaIndex/MilvusVectorStore.
+     - Return course_id and list of uploaded file names.
+
+   - POST /create-match
+     - Body: {course_id, players: [playerA_name, playerB_name], time_limit_seconds (e.g. 30), question_types: ["mcq","short","calc","code"], difficulty:"easy|medium|hard"}
+     - Creates a match record in memory (or a lightweight in-repl dict), assigns match_id, waiting for opponent if only 1 registered.
+     - Returns match_id and websocket_url.
+
+   - POST /join-match
+     - Body: {match_id, player_name}
+     - Adds player to match. When two players connected, server can emit "match_ready".
+
+   - POST /generate-round (server-internal)
+     - Input: match_id, optional topic or specific query.
+     - Implementation: call rag.retrieve(course_id, topic, top_k) -> returns top chunks with metadata.
+       - Build a strict generator prompt for DeepSeek (see prompt templates below).
+       - Ask DeepSeek to: (1) create a *new but similar* problem (not just verbatim), (2) compute correct solution and step-by-step reasoning, (3) return the exact chunk_ids/pages used as sources and an explicit citation token.
+     - Save the question object: {question_id, question_text, answer_spec (structured), solution, source_chunks: [{doc_id, page, chunk_id, char_range}], time_limit}.
+     - Broadcast to both players over WebSocket: "round_start": {question_id, question_text, time_limit}
+
+   - POST /answer
+     - Body: {match_id, question_id, player_name, answer_payload}
+     - Server-side verification:
+       - For short answers / calc / code: run structured verification:
+         - If algorithmic, call DeepSeek with context (the retrieved chunks + player's answer) asking for correctness judgement (JSON: {correct: true/false, confidence: 0-1, explanation}).
+         - For MCQ, simple string compare allowed but use DeepSeek to verify if ambiguous.
+       - If correct -> compute time_taken (server timestamp) and compute damage.
+       - Reply with {correct, damage_dealt, new_hp_state, explanation, citation: original source metadata}
+     - If incorrect -> send feedback and optionally give small cooldown penalty.
+
+2. WebSocket messages & events:
+   - Client connects to ws /ws/{match_id}?player=xxx
+   - Server sends:
+     - "match_ready" — both connected
+     - "round_start": {question_id, text, time_limit, meta}
+     - "round_update": seconds_left (every 1s)
+     - "round_result": {winner_player, loser_player, damage, solution, citation}
+     - "match_end": {winner, final_hp}
+     - "error" messages
+   - Client sends:
+     - "submit_answer": {question_id, answer_payload} (POST /answer also accepted)
+
+3. In-memory match object schema (simple):
+   {
+     match_id,
+     course_id,
+     players: [{name, ws_connection, hp, last_submission_time}],
+     current_round: {question_id, start_time, time_limit},
+     rounds_history: []
+   }
+   - Default HP: 100
+   - Time-limit set by players before match begins
+   - Damage calculation: see below
+
+Damage calculation rules (implement exactly):
+- Inputs: time_limit_seconds (T), seconds_taken (s), base_damage (B=20), max_bonus (M=30)
+- speed_ratio = max(0, (T - s) / T)  # proportion of time saved
+- bonus = round(M * speed_ratio)
+- damage = B + bonus
+- If both players fail to answer within T:
+  - both players take timeout_penalty = round(0.08 * HP_max) (8% of max HP) or fixed 8 damage (choose one — implement as 8)
+- If a player submits incorrect answer: no damage, and they get a small penalty (cooldown of 2s where they can't resubmit)
+- Clamp HP: min 0, max HP_max (100)
+- Example: T=30s, player answers in s=6s → speed_ratio=(30-6)/30=0.8 → bonus=round(30*0.8)=24 → damage=20+24=44
+
+RAG / chunking / citation behavior:
+- Chunk size: 500 tokens ± overlap 50 tokens, preserve metadata: {doc_id, file_name, page, chunk_id (uuid), char_start, char_end}
+- When retrieving top_k chunks, include the source metadata in the generator prompt so the LLM can cite EXACT chunk / page.
+- Citation format in questions & solutions: `[SOURCE: <file_name> | page <N> | chunk <chunk_id>]`
+- Save mapping of question_id -> source_chunks for later verification and user display.
+
+DeepSeek prompt templates (use these EXACT templates):
+1. **Generate problem prompt** (rigorous, strict):
+```
+
+You are a math/CS exam writer. ONLY use the provided context. DO NOT hallucinate outside it. Create ONE problem that is NEW but closely based on the examples and facts in the context. The problem must be solvable with the context. Output JSON ONLY with keys:
+{
+"question_id": "<uuid>",
+"question_text": "...",
+"question_type": "mcq|short|calc|code",
+"options": ["A ...", "B ..."] OR null,
+"correct_answer": "...",   # exact expected answer string or structured spec
+"solution_steps": "...",   # step-by-step solution showing how to get the correct answer
+"source_chunks": [{"file_name":"", "page":N, "chunk_id": "...", "char_range":"start-end"}]
+}
+
+```
+Context: <PASTE_RETRIEVED_CHUNKS_WITH_METADATA>
+```
+
+2. **Verify answer prompt**:
+
+```
+You are an objective grader. Use ONLY the context below (the retrieved chunks) and the official solution string. Evaluate the student's submitted answer and return JSON ONLY:
+{ "correct": true|false, "confidence": 0-1, "explanation":"...", "citation": [{"file_name":"", "page":N, "chunk_id":"..."}] }
+Context: <PASTE_RETRIEVED_CHUNKS_WITH_METADATA>
+Official Solution: <official solution from generation step>
+Student Answer: <student answer here>
+```
+
+Implementation notes about DeepSeek:
+
+* Use streaming for generation if available to reduce latency.
+* Enforce the LLM returns JSON only and validate JSON parse strictly on server.
+* If DeepSeek returns low confidence, reject the question generation and re-run retrieval with a larger top_k and regenerate.
+
+Embeddings & LlamaIndex:
+
+* Use LlamaIndex utilities to create a VectorStoreIndex connected to Milvus. Provide code snippet to create and reconnect to Zilliz Cloud using env vars (ZILLIZ_URI, ZILLIZ_TOKEN).
+* Example snippet:
+
+```python
+from llama_index import SimpleDirectoryReader, StorageContext, VectorStoreIndex
+from llama_index.vector_stores import MilvusVectorStore
+
+vector_store = MilvusVectorStore(uri=os.environ['ZILLIZ_URI'], token=os.environ['ZILLIZ_TOKEN'], collection_name="study_battle", dim=1536, overwrite=False)
+storage_context = StorageContext.from_defaults(vector_store=vector_store)
+index = VectorStoreIndex.from_documents(documents, storage_context=storage_context)
+```
+
+File upload & text extraction:
+
+* PDFs: use pymupdf (fitz) or pdfplumber
+* DOCX: python-docx
+* PPTX: python-pptx (extract slide text)
+* Images: pytesseract (Tesseract) for OCR if provided
+* TXT: read raw text
+* After extraction: clean whitespace, normalize newlines, preserve page numbers and offsets.
+
+Frontend (React, minimal but complete):
+
+* Upload page: select files -> POST /upload -> show files and course_id
+* Lobby page: create or join match (call /create-match and /join-match), set time_limit and question_types
+* Arena page:
+
+  * Health bars for both players (HP starts at 100)
+  * Question display area
+  * Timer progress ring/seconds left
+  * Input area varying by question_type:
+
+    * MCQ: clickable options
+    * Short/calc: text input
+    * Code: code editor (simple <textarea>)
+  * Submit button -> send via WebSocket "submit_answer" event or POST /answer
+  * Show "round_result" with solution and citation link/button to "Show source" which opens the original chunk text (server provides it)
+
+Frontend quick UI notes:
+
+* Use Vite + React, keep CSS minimal.
+* Use simplest code editor (textarea). No need for Monaco in MVP.
+* WebSocket URL default: ws://<repl-host>/ws/{match_id}?player=<name>
+
+Testing/demo script for stage in README:
+
+1. Start Repl (command provided); open two browser windows (or two phones).
+2. In window A: Upload a sample Linear Algebra PDF (or the demo provided).
+3. Player A creates match with time_limit 30s, question_types ["calc","short"], difficulty "medium".
+4. Player B joins match using match_id.
+5. Start match → server generates question (e.g., "Find inverse of matrix ..."), both players race. Player who submits correct answer faster deals damage according to formula. Show HP changes, repeat until someone reaches zero.
+6. Upload and run simple sample documents in README for a fast demo.
+
+Deliverables from Replit Agent:
+
+* Complete runnable repo with all files above.
+* README with env var setup, how to create Zilliz/Milvus cluster (link) and where to put keys, how to obtain DeepSeek key, how to run the app locally in Replit, and a short stage demo script.
+* Default sample dataset in `/sample_data` (small linear algebra PDF or text snippets) to demo immediately without requiring user uploads.
+* Minimal tests: export a curl sequence showing how to generate a match and submit an answer.
+
+Packages to install (backend requirements.txt):
+
+* fastapi
+* uvicorn[standard]
+* python-multipart
+* llama-index
+* pymilvus
+* pdfplumber or pymupdf
+* python-docx
+* python-pptx
+* pytesseract
+* requests
+* aiohttp
+* pydantic
+* deepseek (or wrapper for DeepSeek calls) — if unavailable, use requests to call REST API
+
+Frontend packages (package.json):
+
+* react, react-dom, vite
+
+Security & reliability notes for the agent:
+
+* Validate and sanitize all uploaded files.
+* Enforce per-file size limit (e.g., 20MB).
+* Always persist question -> source chunk mapping to guarantee traceability.
+* Implement minimal rate-limiting for generation (e.g., max 1 question per 3 seconds).
+* Implement robust error handling: if DeepSeek returns malformed JSON, retry 1x with expanded context.
+* Server must never return raw LLM output unvalidated; always parse JSON and validate keys.
+
+Finally, include a short “What to say on stage” script in README:
+
+* 30s intro of concept
+* Upload a short sample file
+* Invite co-presenter to join match
+* Start match and play 2 rounds
+* End on the “K.O.” screen — talk about RAG + citation reliability
+
+---
+
+End of prompt.
+
+```
+
+---
+
+If you want, I will now:
+1. Generate the **actual code files** (complete backend + frontend skeleton) here in the chat so you can copy/paste them into Replit immediately, **or**
+2. Produce a shorter version of the prompt (for a different agent), or
+3. Generate the README and small sample doc for immediate demo.
+
+Which do you want me to do next? (I won’t ask additional architecture questions — I’ll just produce the code and files now.)
+::contentReference[oaicite:0]{index=0}
+```
