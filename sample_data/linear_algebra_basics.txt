@@ -1,0 +1,148 @@
+LINEAR ALGEBRA FUNDAMENTALS
+===========================
+
+Chapter 1: Vectors and Vector Operations
+
+A vector is a mathematical object that has both magnitude and direction. In linear algebra, vectors are typically represented as ordered lists of numbers called components.
+
+Example: v = [3, 4] is a 2-dimensional vector with components 3 and 4.
+
+Vector Addition:
+To add two vectors, add their corresponding components.
+Example: [1, 2] + [3, 4] = [1+3, 2+4] = [4, 6]
+
+Scalar Multiplication:
+To multiply a vector by a scalar (number), multiply each component by that scalar.
+Example: 3 * [2, 5] = [3*2, 3*5] = [6, 15]
+
+Dot Product:
+The dot product of two vectors is the sum of the products of their corresponding components.
+Formula: a · b = a1*b1 + a2*b2 + ... + an*bn
+Example: [1, 2, 3] · [4, 5, 6] = 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+
+Vector Magnitude (Length):
+The magnitude of a vector is calculated using the Pythagorean theorem.
+Formula: |v| = sqrt(v1² + v2² + ... + vn²)
+Example: |[3, 4]| = sqrt(3² + 4²) = sqrt(9 + 16) = sqrt(25) = 5
+
+Chapter 2: Matrices
+
+A matrix is a rectangular array of numbers arranged in rows and columns.
+
+Example of a 2x3 matrix:
+A = | 1  2  3 |
+    | 4  5  6 |
+
+Matrix Addition:
+Add corresponding elements of matrices with the same dimensions.
+Example:
+| 1  2 |   | 5  6 |   | 1+5  2+6 |   | 6   8 |
+| 3  4 | + | 7  8 | = | 3+7  4+8 | = | 10  12 |
+
+Matrix Multiplication:
+To multiply matrices A (m×n) and B (n×p), the resulting matrix C is m×p.
+Each element C[i,j] = sum of A[i,k] * B[k,j] for all k.
+
+Example:
+| 1  2 |   | 5  6 |   | 1*5+2*7  1*6+2*8 |   | 19  22 |
+| 3  4 | × | 7  8 | = | 3*5+4*7  3*6+4*8 | = | 43  50 |
+
+Chapter 3: Matrix Operations
+
+Transpose:
+The transpose of a matrix is obtained by interchanging its rows and columns.
+If A is m×n, then A^T is n×m.
+
+Example:
+A = | 1  2  3 |     A^T = | 1  4 |
+    | 4  5  6 |           | 2  5 |
+                          | 3  6 |
+
+Determinant (2x2 matrix):
+For a 2×2 matrix A = | a  b |, the determinant is: det(A) = ad - bc
+                     | c  d |
+
+Example:
+A = | 3  2 |
+    | 1  4 |
+det(A) = 3*4 - 2*1 = 12 - 2 = 10
+
+Inverse of a 2x2 Matrix:
+For A = | a  b |, the inverse is: A^(-1) = (1/det(A)) * | d   -b |
+        | c  d |                                        | -c   a |
+
+Example:
+A = | 4  7 |
+    | 2  6 |
+det(A) = 4*6 - 7*2 = 24 - 14 = 10
+A^(-1) = (1/10) * | 6   -7 | = | 0.6   -0.7 |
+                  | -2   4 |   | -0.2   0.4 |
+
+Chapter 4: Systems of Linear Equations
+
+A system of linear equations can be written in matrix form as Ax = b.
+
+Example:
+2x + 3y = 8
+4x + y = 6
+
+Matrix form: | 2  3 | | x |   | 8 |
+             | 4  1 | | y | = | 6 |
+
+Solving using inverse:
+x = A^(-1) * b
+
+For the example above:
+det(A) = 2*1 - 3*4 = 2 - 12 = -10
+A^(-1) = (-1/10) * | 1   -3 | = | -0.1   0.3 |
+                   | -4   2 |   | 0.4   -0.2 |
+
+x = | -0.1   0.3 | | 8 | = | -0.1*8 + 0.3*6 |   | -0.8 + 1.8 |   | 1 |
+    | 0.4   -0.2 | | 6 |   | 0.4*8 - 0.2*6 | = | 3.2 - 1.2  | = | 2 |
+
+Therefore: x = 1, y = 2
+
+Chapter 5: Eigenvalues and Eigenvectors
+
+For a square matrix A, a non-zero vector v is an eigenvector if:
+Av = λv
+
+where λ (lambda) is the corresponding eigenvalue.
+
+To find eigenvalues:
+det(A - λI) = 0
+
+Example for a 2x2 matrix A = | 4  1 |
+                             | 2  3 |
+
+det(| 4-λ   1  |) = 0
+   (| 2    3-λ |)
+
+(4-λ)(3-λ) - 2*1 = 0
+12 - 4λ - 3λ + λ² - 2 = 0
+λ² - 7λ + 10 = 0
+(λ - 5)(λ - 2) = 0
+
+Eigenvalues: λ₁ = 5, λ₂ = 2
+
+Practice Problems:
+
+1. Calculate [2, 3, 4] · [1, 0, 2]
+   Answer: 2*1 + 3*0 + 4*2 = 2 + 0 + 8 = 10
+
+2. Find the magnitude of vector [5, 12]
+   Answer: sqrt(5² + 12²) = sqrt(25 + 144) = sqrt(169) = 13
+
+3. Multiply matrices: | 2  0 | × | 1  2 |
+                      | 1  3 |   | 0  1 |
+   Answer: | 2*1+0*0  2*2+0*1 | = | 2  4 |
+           | 1*1+3*0  1*2+3*1 |   | 1  5 |
+
+4. Find the determinant of | 5  3 |
+                          | 2  4 |
+   Answer: 5*4 - 3*2 = 20 - 6 = 14
+
+5. Solve the system:
+   x + 2y = 5
+   3x + 4y = 11
+   Answer: x = 1, y = 2
