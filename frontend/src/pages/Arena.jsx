@@ -21,6 +21,7 @@ function Arena() {
   const [error, setError] = useState(null)
   const [cooldown, setCooldown] = useState(0)
   const [waitingForOpponent, setWaitingForOpponent] = useState(true)
+  const [roundHistory, setRoundHistory] = useState([])
   
   const wsRef = useRef(null)
   const cooldownTimerRef = useRef(null)
@@ -102,6 +103,14 @@ function Arena() {
         setSelectedOption(null)
         setRoundResult(null)
         setSubmitting(false)
+        // Store the question for history
+        setRoundHistory(prev => [...prev, {
+          question_id: data.question_id,
+          question_text: data.question_text,
+          question_type: data.question_type,
+          options: data.options,
+          citation: data.citation || []
+        }])
         break
 
       case 'round_update':
@@ -181,25 +190,73 @@ function Arena() {
 
   if (matchEnd) {
     return (
-      <div className="ko-screen">
-        <div className="ko-text">K.O.</div>
-        <div className="winner-text">
-          {matchEnd.winner === playerName ? 'You Win!' : `${matchEnd.winner} Wins!`}
+      <div style={{ maxHeight: '90vh', overflowY: 'auto' }}>
+        <div className="ko-screen" style={{ marginBottom: '40px' }}>
+          <div className="ko-text">K.O.</div>
+          <div className="winner-text">
+            {matchEnd.winner === playerName ? 'You Win!' : `${matchEnd.winner} Wins!`}
+          </div>
+          <div style={{ marginTop: '30px', marginBottom: '40px' }}>
+            {Object.entries(matchEnd.final_hp || {}).map(([name, hp]) => (
+              <p key={name} style={{ fontSize: '20px', marginBottom: '10px' }}>
+                {name}: {hp} HP
+              </p>
+            ))}
+          </div>
         </div>
-        <div style={{ marginTop: '30px' }}>
-          {Object.entries(matchEnd.final_hp || {}).map(([name, hp]) => (
-            <p key={name} style={{ fontSize: '20px', marginBottom: '10px' }}>
-              {name}: {hp} HP
-            </p>
-          ))}
+
+        <div style={{ marginTop: '40px', marginBottom: '40px' }}>
+          <h2 style={{ marginBottom: '20px', textAlign: 'center' }}>Problems & Sources</h2>
+          {roundHistory.length > 0 ? (
+            <div style={{ display: 'grid', gap: '20px' }}>
+              {roundHistory.map((round, idx) => (
+                <div key={idx} className="card" style={{ borderLeft: '4px solid #7c3aed' }}>
+                  <div style={{ marginBottom: '12px' }}>
+                    <span style={{ fontSize: '14px', opacity: 0.6 }}>Question {idx + 1}</span>
+                    <h4 style={{ margin: '8px 0 12px 0' }}>{round.question_text}</h4>
+                  </div>
+                  
+                  {round.options && (
+                    <div style={{ marginBottom: '12px', fontSize: '14px', opacity: 0.8 }}>
+                      <p style={{ margin: '0 0 6px 0' }}>
+                        <strong>Options:</strong> {round.options.join(', ')}
+                      </p>
+                    </div>
+                  )}
+
+                  {round.citation && round.citation.length > 0 && (
+                    <div style={{ 
+                      padding: '12px', 
+                      background: 'rgba(124, 58, 237, 0.1)', 
+                      borderRadius: '8px',
+                      marginTop: '12px'
+                    }}>
+                      <strong style={{ fontSize: '14px' }}>📚 Source:</strong>
+                      <div style={{ marginTop: '8px', fontSize: '14px' }}>
+                        {round.citation.map((c, i) => (
+                          <div key={i} style={{ marginBottom: '4px', opacity: 0.9 }}>
+                            {c.file_name} {c.page && `(Page ${c.page})`}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p style={{ textAlign: 'center', opacity: 0.6 }}>No problems in this match</p>
+          )}
         </div>
-        <button 
-          className="btn-primary" 
-          onClick={() => navigate('/lobby')}
-          style={{ marginTop: '30px' }}
-        >
-          Back to Lobby
-        </button>
+
+        <div style={{ textAlign: 'center', marginTop: '40px', marginBottom: '40px' }}>
+          <button 
+            className="btn-primary" 
+            onClick={() => navigate('/lobby')}
+          >
+            Back to Lobby
+          </button>
+        </div>
       </div>
     )
   }
