@@ -22,6 +22,8 @@ function Arena() {
   const [cooldown, setCooldown] = useState(0)
   const [waitingForOpponent, setWaitingForOpponent] = useState(true)
   const [roundHistory, setRoundHistory] = useState([])
+  const [skipStatus, setSkipStatus] = useState({})
+  const [wsError, setWsError] = useState(null)
   
   const wsRef = useRef(null)
   const cooldownTimerRef = useRef(null)
@@ -37,6 +39,7 @@ function Arena() {
       console.log('WebSocket connected')
       setConnected(true)
       setError(null)
+      setWsError(null)
     }
 
     ws.onmessage = (event) => {
@@ -48,15 +51,27 @@ function Arena() {
     ws.onerror = (error) => {
       console.error('WebSocket error:', error)
       setError('Connection error')
+      setWsError('WebSocket connection failed. Ensure you entered Arena via Matches and the backend is running.')
     }
 
     ws.onclose = () => {
       console.log('WebSocket closed')
       setConnected(false)
+      if (!matchEnd) {
+        setWsError('Connection closed')
+      }
     }
 
     return ws
   }, [matchId, playerName])
+
+  const retryConnect = () => {
+    try {
+      if (wsRef.current) wsRef.current.close()
+    } catch {}
+    setWsError(null)
+    connectWebSocket()
+  }
 
   useEffect(() => {
     const ws = connectWebSocket()
@@ -103,6 +118,7 @@ function Arena() {
         setSelectedOption(null)
         setRoundResult(null)
         setSubmitting(false)
+        setSkipStatus({})
         // Store the question for history
         setRoundHistory(prev => [...prev, {
           question_id: data.question_id,
@@ -117,12 +133,29 @@ function Arena() {
         setTimeLeft(data.seconds_left)
         break
 
+      case 'skip_update':
+        const skipped = {}
+        ;(data.skipped_by || []).forEach(name => { skipped[name] = true })
+        setSkipStatus(skipped)
+        break
+
       case 'round_result':
         setRoundResult(data)
         setCurrentQuestion(null)
         if (data.players) {
           setPlayers(data.players)
         }
+        setRoundHistory(prev => {
+          if (prev.length === 0) return prev
+          const updated = [...prev]
+          updated[updated.length - 1] = {
+            ...updated[updated.length - 1],
+            solution: data.solution,
+            correct_answer: data.correct_answer,
+            citation: data.citation || updated[updated.length - 1].citation || []
+          }
+          return updated
+        })
         break
 
       case 'answer_feedback':
@@ -224,23 +257,50 @@ function Arena() {
                     </div>
                   )}
 
-                  {round.citation && round.citation.length > 0 && (
-                    <div style={{ 
-                      padding: '12px', 
-                      background: 'rgba(124, 58, 237, 0.1)', 
-                      borderRadius: '8px',
-                      marginTop: '12px'
-                    }}>
-                      <strong style={{ fontSize: '14px' }}>📚 Source:</strong>
-                      <div style={{ marginTop: '8px', fontSize: '14px' }}>
-                        {round.citation.map((c, i) => (
-                          <div key={i} style={{ marginBottom: '4px', opacity: 0.9 }}>
+              {round.citation && round.citation.length > 0 && (
+                <div style={{ 
+                  padding: '12px', 
+                  background: 'rgba(124, 58, 237, 0.1)', 
+                  borderRadius: '8px',
+                  marginTop: '12px'
+                }}>
+                  <strong style={{ fontSize: '14px' }}>📚 Source:</strong>
+                  <div style={{ marginTop: '8px', fontSize: '14px' }}>
+                    {round.citation.map((c, i) => (
+                      c.url ? (
+                        <div key={i} style={{ marginBottom: '4px', opacity: 0.9 }}>
+                          <a href={c.url} target="_blank" rel="noopener noreferrer" className="inline-link">
                             {c.file_name} {c.page && `(Page ${c.page})`}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                          </a>
+                        </div>
+                      ) : (
+                        <div key={i} style={{ marginBottom: '4px', opacity: 0.9 }}>
+                          {c.file_name} {c.page && `(Page ${c.page})`}
+                        </div>
+                      )
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {(round.solution || round.correct_answer) && (
+                <div style={{ 
+                  padding: '12px', 
+                  background: 'rgba(255,255,255,0.05)', 
+                  borderRadius: '8px',
+                  marginTop: '12px'
+                }}>
+                  <strong style={{ fontSize: '14px' }}>Solution:</strong>
+                  {round.solution && (
+                    <p style={{ marginTop: '8px', fontSize: '14px' }}>{round.solution}</p>
                   )}
+                  {round.correct_answer && (
+                    <p style={{ marginTop: '8px', fontSize: '14px' }}>
+                      <strong>Answer:</strong> {round.correct_answer}
+                    </p>
+                  )}
+                </div>
+              )}
                 </div>
               ))}
             </div>
@@ -252,7 +312,7 @@ function Arena() {
         <div style={{ textAlign: 'center', marginTop: '40px', marginBottom: '40px' }}>
           <button 
             className="btn-primary" 
-            onClick={() => navigate('/lobby')}
+            onClick={() => navigate('/matches')}
           >
             Back to Lobby
           </button>
@@ -276,6 +336,13 @@ function Arena() {
             <div className="spinner"></div>
             <span>Connecting...</span>
           </div>
+          {wsError && (
+            <p style={{ marginTop: '12px', opacity: 0.8 }}>{wsError}</p>
+          )}
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '16px' }}>
+            <button className="btn-secondary" onClick={retryConnect}>Retry</button>
+            <button className="btn-primary" onClick={() => navigate('/matches')}>Back to Matches</button>
+          </div>
         </div>
       )}
 
@@ -297,7 +364,7 @@ function Arena() {
           {Object.entries(players).map(([name, data]) => (
             <div key={name} className="health-bar-container">
               <span className="player-name">
-                {name === playerName ? `${name} (You)` : name}
+                {name === playerName ? `${name} (You)` : name}{skipStatus[name] ? ' • Skip' : ''}
               </span>
               <div className="health-bar">
                 <div 
@@ -321,6 +388,11 @@ function Arena() {
             <div className="question-text">
               {currentQuestion.question_text}
             </div>
+            {skipStatus[playerName] && (
+              <p style={{ marginTop: '8px', color: '#ffd200' }}>
+                You opted to skip. {Object.keys(skipStatus).filter(n => n !== playerName).length === 0 ? 'Waiting for opponent...' : 'Opponent also opted to skip.'}
+              </p>
+            )}
 
             {currentQuestion.question_type === 'mcq' && currentQuestion.options ? (
               <div className="options-list">
@@ -374,6 +446,15 @@ function Arena() {
             >
               {submitting ? 'Submitting...' : 'Submit Answer'}
             </button>
+
+            <button
+              className="btn-secondary"
+              onClick={() => wsRef.current && wsRef.current.send(JSON.stringify({ type: 'skip_round' }))}
+              disabled={submitting || skipStatus[playerName]}
+              style={{ width: '100%', marginTop: '10px' }}
+            >
+              {skipStatus[playerName] ? 'Skipped' : 'Skip Round'}
+            </button>
           </div>
         </>
       )}
@@ -381,7 +462,14 @@ function Arena() {
       {roundResult && (
         <div className="result-overlay" onClick={() => setRoundResult(null)}>
           <div className="result-card" onClick={(e) => e.stopPropagation()}>
-            {roundResult.timeout ? (
+            {roundResult.skipped ? (
+              <>
+                <div className="result-title" style={{ color: '#667eea' }}>
+                  Round Skipped
+                </div>
+                <p>No damage dealt</p>
+              </>
+            ) : roundResult.timeout ? (
               <>
                 <div className="result-title" style={{ color: '#ffd200' }}>
                   Time's Up!
@@ -413,10 +501,13 @@ function Arena() {
                 <div className="citation">
                   <strong>Source:</strong>{' '}
                   {roundResult.citation.map((c, i) => (
-                    <span key={i}>
-                      {c.file_name} (Page {c.page})
-                      {i < roundResult.citation.length - 1 ? ', ' : ''}
-                    </span>
+                    c.url ? (
+                      <a key={i} href={c.url} target="_blank" rel="noopener noreferrer" className="inline-link">
+                        {c.file_name} (Page {c.page})
+                      </a>
+                    ) : (
+                      <span key={i}>{c.file_name} (Page {c.page})</span>
+                    )
                   ))}
                 </div>
               )}

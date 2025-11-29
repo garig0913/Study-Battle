@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 function Lobby() {
@@ -23,7 +23,7 @@ function Lobby() {
     }
   }, [])
 
-  const fetchCourses = async () => {
+  const fetchCourses = useCallback(async () => {
     try {
       const response = await fetch('/api/courses')
       const data = await response.json()
@@ -31,7 +31,19 @@ function Lobby() {
     } catch (err) {
       console.error('Failed to fetch courses:', err)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    const handler = () => {
+      fetchCourses()
+      const savedCourseId = localStorage.getItem('lastCourseId')
+      if (savedCourseId) {
+        setSelectedCourse(savedCourseId)
+      }
+    }
+    window.addEventListener('courses:refresh', handler)
+    return () => window.removeEventListener('courses:refresh', handler)
+  }, [fetchCourses])
 
   const handleCreateMatch = async () => {
     if (!selectedCourse || !playerName) {
@@ -152,12 +164,25 @@ function Lobby() {
         <label style={{ display: 'block', marginBottom: '8px', opacity: 0.7 }}>
           Time Limit (seconds)
         </label>
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap' }}>
+          {[15, 30, 45, 60].map(v => (
+            <button
+              key={v}
+              className={timeLimit === v ? 'btn-primary' : 'btn-secondary'}
+              onClick={() => setTimeLimit(v)}
+              style={{ padding: '8px 16px' }}
+            >
+              {v}s
+            </button>
+          ))}
+        </div>
         <input
           type="number"
           min="10"
-          max="120"
+          max="180"
+          step="5"
           value={timeLimit}
-          onChange={(e) => setTimeLimit(parseInt(e.target.value))}
+          onChange={(e) => setTimeLimit(Math.max(10, Math.min(180, parseInt(e.target.value || '0'))))}
         />
 
         <label style={{ display: 'block', marginBottom: '8px', opacity: 0.7 }}>

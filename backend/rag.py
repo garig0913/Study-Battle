@@ -36,6 +36,7 @@ class RAGPipeline:
                 logger.warning(f"Failed to initialize OpenAI embeddings: {e}")
         
         logger.info("No OpenAI API key - using direct chunk retrieval instead of RAG")
+        self._use_rag = False
     
     def _get_vector_store(self, collection_name: str) -> Optional[MilvusVectorStore]:
         zilliz_uri = os.environ.get("ZILLIZ_URI") or os.environ.get("Public_Endpoint")
@@ -66,6 +67,23 @@ class RAGPipeline:
             return vector_store
         except Exception as e:
             logger.warning(f"Failed to create local Milvus: {e}")
+            return None
+
+    def _ensure_index(self, course_id: str) -> Optional[VectorStoreIndex]:
+        if course_id in self.indices:
+            return self.indices[course_id]
+        collection_name = f"study_battle_{course_id[:8]}"
+        vector_store = self._get_vector_store(collection_name)
+        if not vector_store:
+            return None
+        try:
+            storage_context = StorageContext.from_defaults(vector_store=vector_store)
+            index = VectorStoreIndex.from_vector_store(vector_store=vector_store, storage_context=storage_context)
+            self.indices[course_id] = index
+            logger.info(f"Reused persistent index for course {course_id}")
+            return index
+        except Exception as e:
+            logger.warning(f"Failed to reuse index for course {course_id}: {e}")
             return None
     
     async def index_chunks(self, course_id: str, chunks: List[Dict]) -> int:
@@ -132,12 +150,38 @@ class RAGPipeline:
         query: str, 
         top_k: int = 5
     ) -> List[Dict]:
-        if course_id not in self.indices:
-            logger.warning(f"No index found for course {course_id}")
+        if not self._use_rag:
             if course_id in self.chunk_mappings:
-                chunks = list(self.chunk_mappings[course_id].values())[:top_k]
-                return chunks
+                chunks = list(self.chunk_mappings[course_id].values())
+                q = (query or "").lower()
+                if q:
+                    import re
+                    tokens = [t for t in re.split(r"\W+", q) if t]
+                    token_set = set(tokens)
+                    scored = []
+                    for ch in chunks:
+                        text = (ch.get("text") or "").lower()
+                        if not text:
+                            continue
+                        score = sum(text.count(tok) for tok in token_set)
+                        if len(tokens) >= 2 and " ".join(tokens) in text:
+                            score += 2
+                        scored.append((score, ch))
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    nonzero = [ch for s, ch in scored if s > 0]
+                    if nonzero:
+                        return nonzero[:top_k]
+                return chunks[:top_k]
+            logger.warning(f"No chunks for course {course_id}")
             return []
+        if course_id not in self.indices:
+            index_reused = self._ensure_index(course_id)
+            if not index_reused:
+                logger.warning(f"No index found for course {course_id}")
+                if course_id in self.chunk_mappings:
+                    chunks = list(self.chunk_mappings[course_id].values())[:top_k]
+                    return chunks
+                return []
         
         try:
             index = self.indices[course_id]

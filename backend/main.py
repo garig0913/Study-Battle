@@ -2,11 +2,20 @@ import os
 import sys
 import time
 import uuid
+import random
 import json
 import asyncio
 import logging
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
+
+from dotenv import load_dotenv
+
+# Load environment variables early
+if os.path.exists(os.path.join(os.path.dirname(__file__), "..", ".env")):
+    load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+elif os.path.exists(os.path.join(os.path.dirname(__file__), "..", ".env.example")):
+    load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env.example"))
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +27,8 @@ from models import (
     CreateMatchRequest, CreateMatchResponse,
     JoinMatchRequest, JoinMatchResponse,
     AnswerRequest, AnswerResponse,
-    UploadResponse, QuestionType, Difficulty, SourceChunk
+    UploadResponse, QuestionType, Difficulty, SourceChunk,
+    ChatRequest, ChatResponse
 )
 from storage import file_storage
 from rag import rag_pipeline
@@ -41,6 +51,26 @@ round_timers: Dict[str, asyncio.Task] = {}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Study-Battle server starting...")
+    try:
+        file_storage.load_existing_courses()
+        logger.info(f"Loaded {len(file_storage.courses)} persisted courses")
+        # Populate retrieval chunk mappings from manifests
+        for cid, info in file_storage.courses.items():
+            chunks = info.get("chunks", [])
+            if chunks:
+                rag_pipeline.chunk_mappings[cid] = {}
+                for ch in chunks:
+                    rag_pipeline.chunk_mappings[cid][ch["chunk_id"]] = {
+                        "doc_id": ch["doc_id"],
+                        "file_name": ch["file_name"],
+                        "page_number": ch["page_number"],
+                        "chunk_id": ch["chunk_id"],
+                        "char_start": ch["char_start"],
+                        "char_end": ch["char_end"],
+                        "text": ch["text"],
+                    }
+    except Exception as e:
+        logger.warning(f"Failed to load existing courses: {e}")
     yield
     await generator.close()
     logger.info("Study-Battle server shutdown")
@@ -60,6 +90,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve persisted uploaded files
+files_dir = os.path.join(os.path.dirname(__file__), "data", "uploads")
+if os.path.isdir(files_dir):
+    app.mount("/files", StaticFiles(directory=files_dir), name="files")
 
 
 def calculate_damage(time_limit: int, seconds_taken: float) -> int:
@@ -140,6 +175,8 @@ async def handle_round_timeout(match_id: str):
     
     question = match.current_round.question
     
+    saved = file_storage.get_saved_files(match.course_id)
+    saved_map = {sf.get("file_name"): sf.get("saved_name") for sf in saved}
     await broadcast_to_match(match_id, {
         "type": "round_result",
         "data": {
@@ -148,7 +185,14 @@ async def handle_round_timeout(match_id: str):
             "damage": TIMEOUT_PENALTY,
             "solution": question.solution_steps,
             "correct_answer": question.correct_answer,
-            "citation": [sc.model_dump() for sc in question.source_chunks],
+            "citation": [
+                {
+                    "file_name": sc.file_name,
+                    "page": sc.page,
+                    "chunk_id": sc.chunk_id,
+                    "url": f"/files/{match.course_id}/{saved_map.get(sc.file_name, '')}#page={sc.page}" if saved_map.get(sc.file_name) else None
+                } for sc in question.source_chunks
+            ],
             "players": {name: {"hp": p.hp} for name, p in match.players.items()}
         }
     })
@@ -177,12 +221,74 @@ async def start_new_round(match_id: str):
         return
     
     chunks = rag_pipeline.get_all_chunks(match.course_id)
+    logger.info(f"round: fetching chunks for course {match.course_id}, count={len(chunks)}")
     
-    question = await generator.generate_question(
-        chunks=chunks[:10],
-        question_types=match.question_types,
-        difficulty=match.difficulty
-    )
+    sample = chunks
+    if len(chunks) > 10:
+        sample = random.sample(chunks, 10)
+    logger.info(f"round: generating question types={[qt.value for qt in match.question_types]} difficulty={match.difficulty.value}")
+    # Try concept-driven question first to reduce repetitive short prompts
+    question = None
+    try:
+        concept_pool = chunks if len(chunks) <= 50 else random.sample(chunks, 50)
+        concepts = await generator.extract_concepts(concept_pool)
+        if concepts:
+            concept = random.choice(concepts)
+            allowed = match.question_types or [QuestionType.SHORT, QuestionType.MCQ]
+            if QuestionType.MCQ in allowed and random.random() < 0.7:
+                q_type = QuestionType.MCQ
+            else:
+                non_calc = [t for t in allowed if t != QuestionType.CALC]
+                q_type = non_calc[0] if non_calc else (allowed[0] if allowed else QuestionType.SHORT)
+            base_chunk = sample[0]
+            source_chunks = [SourceChunk(
+                doc_id=base_chunk.get("doc_id", ""),
+                file_name=base_chunk.get("file_name", ""),
+                page=base_chunk.get("page_number", base_chunk.get("page", 1)),
+                chunk_id=base_chunk.get("chunk_id", ""),
+                char_start=base_chunk.get("char_start", 0),
+                char_end=base_chunk.get("char_end", 0),
+                text=base_chunk.get("text", "")[:200]
+            )]
+            if q_type == QuestionType.MCQ:
+                others = [c for c in concepts if c is not concept]
+                random.shuffle(others)
+                distractors = [o['summary'] for o in others[:2]]
+                while len(distractors) < 2:
+                    distractors.append("A plausible but incorrect summary")
+                options = [
+                    f"A. {concept['summary']}",
+                    f"B. {distractors[0]}",
+                    f"C. {distractors[1]}",
+                    "D. None of the above"
+                ]
+                question = GeneratedQuestion(
+                    question_id=str(uuid.uuid4()),
+                    question_text=f"Which option best defines the concept '{concept['name']}'?",
+                    question_type=q_type,
+                    options=options,
+                    correct_answer="A",
+                    solution_steps="Select the option that correctly defines the concept.",
+                    source_chunks=source_chunks
+                )
+            else:
+                question = GeneratedQuestion(
+                    question_id=str(uuid.uuid4()),
+                    question_text=f"Define '{concept['name']}'.",
+                    question_type=q_type,
+                    options=None,
+                    correct_answer=concept['summary'],
+                    solution_steps="Name the concept and give its concise definition and role.",
+                    source_chunks=source_chunks
+                )
+    except Exception as e:
+        logger.warning(f"Concept-driven generation failed: {e}")
+    if question is None:
+        question = await generator.generate_question(
+            chunks=sample,
+            question_types=match.question_types,
+            difficulty=match.difficulty
+        )
     
     if not question:
         await broadcast_to_match(match_id, {
@@ -192,6 +298,7 @@ async def start_new_round(match_id: str):
         return
     
     question.time_limit = match.time_limit_seconds
+    logger.info(f"round: generated question id={question.question_id} type={question.question_type.value}")
     
     match.current_round = CurrentRound(
         question_id=question.question_id,
@@ -203,12 +310,24 @@ async def start_new_round(match_id: str):
     for player in match.players.values():
         player.submitted_this_round = False
     
+    # Build citation with URLs to persisted files
+    saved = file_storage.get_saved_files(match.course_id)
+    saved_map = {sf.get("file_name"): sf.get("saved_name") for sf in saved}
+
     question_data = {
         "question_id": question.question_id,
         "question_text": question.question_text,
         "question_type": question.question_type.value,
         "options": question.options,
-        "time_limit": question.time_limit
+        "time_limit": question.time_limit,
+        "citation": [
+            {
+                "file_name": sc.file_name,
+                "page": sc.page,
+                "chunk_id": sc.chunk_id,
+                "url": f"/files/{match.course_id}/{saved_map.get(sc.file_name, '')}#page={sc.page}" if saved_map.get(sc.file_name) else None
+            } for sc in question.source_chunks
+        ]
     }
     
     await broadcast_to_match(match_id, {
@@ -278,6 +397,19 @@ async def upload_files(files: List[UploadFile] = File(...)):
         files=processed_files,
         chunks_indexed=indexed_count
     )
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest):
+    course_info = file_storage.get_course_info(req.course_id)
+    if not course_info:
+        raise HTTPException(status_code=404, detail="Course not found")
+    used = await rag_pipeline.retrieve(req.course_id, req.question, top_k=6)
+    if not used:
+        chunks = rag_pipeline.get_all_chunks(req.course_id)
+        used = chunks[:6]
+    qa = await generator.answer_question(used, req.question)
+    return ChatResponse(answer=qa.get("answer", ""), citation=qa.get("citation", []))
 
 
 @app.post("/api/create-match", response_model=CreateMatchResponse)
@@ -385,6 +517,8 @@ async def submit_answer(request: AnswerRequest):
         if request.match_id in round_timers:
             round_timers[request.match_id].cancel()
         
+        saved = file_storage.get_saved_files(match.course_id)
+        saved_map = {sf.get("file_name"): sf.get("saved_name") for sf in saved}
         await broadcast_to_match(request.match_id, {
             "type": "round_result",
             "data": {
@@ -394,7 +528,14 @@ async def submit_answer(request: AnswerRequest):
                 "time_taken": round(time_taken, 2),
                 "solution": question.solution_steps,
                 "correct_answer": question.correct_answer,
-                "citation": [sc.model_dump() for sc in question.source_chunks],
+                "citation": [
+                    {
+                        "file_name": sc.file_name,
+                        "page": sc.page,
+                        "chunk_id": sc.chunk_id,
+                        "url": f"/files/{match.course_id}/{saved_map.get(sc.file_name, '')}#page={sc.page}" if saved_map.get(sc.file_name) else None
+                    } for sc in question.source_chunks
+                ],
                 "players": {name: {"hp": p.hp} for name, p in match.players.items()}
             }
         })
@@ -458,12 +599,53 @@ async def get_match_info(match_id: str):
 async def list_courses():
     courses = []
     for course_id, info in file_storage.courses.items():
+        files = info.get("files", [])
+        chunk_count = len(info.get("chunks", []))
+        if not files or chunk_count == 0:
+            continue
         courses.append({
             "course_id": course_id,
-            "files": info.get("files", []),
-            "chunk_count": len(info.get("chunks", []))
+            "files": files,
+            "chunk_count": chunk_count
         })
     return {"courses": courses}
+
+
+@app.get("/api/course-files/{course_id}")
+async def list_course_files(course_id: str):
+    info = file_storage.get_course_info(course_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Course not found")
+    saved = file_storage.get_saved_files(course_id)
+    files = []
+    for sf in saved:
+        original_name = sf.get("file_name", "")
+        chunks = info.get("chunks", [])
+        file_chunks = [ch for ch in chunks if ch.get("file_name") == original_name]
+        files.append({
+            "file_name": original_name,
+            "url": f"/files/{course_id}/{sf.get('saved_name', '')}",
+            "saved_name": sf.get('saved_name', ''),
+            "chunk_count": len(file_chunks)
+        })
+    return {"files": files}
+
+
+@app.get("/api/course-file-details/{course_id}/{saved_name}")
+async def course_file_details(course_id: str, saved_name: str):
+    info = file_storage.get_course_info(course_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Course not found")
+    details = file_storage.get_file_details(course_id, saved_name)
+    return details
+
+
+@app.delete("/api/course-file/{course_id}/{saved_name}")
+async def delete_course_file(course_id: str, saved_name: str):
+    ok = file_storage.delete_file(course_id, saved_name)
+    if not ok:
+        raise HTTPException(status_code=404, detail="File not found")
+    return {"success": True}
 
 
 @app.websocket("/ws/{match_id}")
@@ -520,11 +702,24 @@ async def websocket_endpoint(websocket: WebSocket, match_id: str):
                 "players": {name: {"hp": p.hp} for name, p in match.players.items()}
             }
         }))
-        # If there's a current question, send it to the reconnected player
-        if match.current_question:
+        if match.current_round and match.current_round.question:
+            q = match.current_round.question
             await websocket.send_text(json.dumps({
                 "type": "round_start",
-                "data": match.current_question.model_dump()
+                "data": {
+                    "question_id": q.question_id,
+                    "question_text": q.question_text,
+                    "question_type": q.question_type.value,
+                    "options": q.options,
+                    "time_limit": q.time_limit,
+                    "citation": [
+                        {
+                            "file_name": sc.file_name,
+                            "page": sc.page,
+                            "chunk_id": sc.chunk_id
+                        } for sc in q.source_chunks
+                    ]
+                }
             }))
     # Otherwise check if we now have 2 players to start the match
     elif len(websocket_connections[match_id]) == 2 and match.status == "waiting":
@@ -560,6 +755,54 @@ async def websocket_endpoint(websocket: WebSocket, match_id: str):
                         "data": {"message": e.detail}
                     }))
             
+            elif message.get("type") == "skip_round":
+                match = matches.get(match_id)
+                if match and match.current_round:
+                    cr = match.current_round
+                    if player_name not in cr.skipped_by:
+                        cr.skipped_by.append(player_name)
+                        await broadcast_to_match(match_id, {
+                            "type": "skip_update",
+                            "data": {
+                                "skipped_by": cr.skipped_by,
+                                "total": len(match.players)
+                            }
+                        })
+                    # If both players skipped, end round without damage
+                    if len(cr.skipped_by) >= len(match.players):
+                        if match_id in round_timers:
+                            round_timers[match_id].cancel()
+                        # Include solution, correct answer and citations so players can review
+                        question = cr.question
+                        saved = file_storage.get_saved_files(match.course_id)
+                        saved_map = {sf.get("file_name"): sf.get("saved_name") for sf in saved}
+                        await broadcast_to_match(match_id, {
+                            "type": "round_result",
+                            "data": {
+                                "skipped": True,
+                                "damage": 0,
+                                "solution": question.solution_steps,
+                                "correct_answer": question.correct_answer,
+                                "citation": [
+                                    {
+                                        "file_name": sc.file_name,
+                                        "page": sc.page,
+                                        "chunk_id": sc.chunk_id,
+                                        "url": f"/files/{match.course_id}/{saved_map.get(sc.file_name, '')}#page={sc.page}" if saved_map.get(sc.file_name) else None
+                                    } for sc in question.source_chunks
+                                ],
+                                "players": {name: {"hp": p.hp} for name, p in match.players.items()}
+                            }
+                        })
+                        match.current_round = None
+                        await asyncio.sleep(1)
+                        await start_new_round(match_id)
+                else:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "data": {"message": "No active round"}
+                    }))
+
             elif message.get("type") == "ping":
                 await websocket.send_text(json.dumps({"type": "pong"}))
     
@@ -585,3 +828,9 @@ if os.path.exists("frontend/dist"):
 @app.get("/api/health")
 async def health_check():
     return {"status": "healthy", "version": "1.0.0"}
+@app.delete("/api/courses")
+async def delete_all_courses():
+    deleted = file_storage.delete_all()
+    rag_pipeline.indices = {}
+    rag_pipeline.chunk_mappings = {}
+    return {"deleted_courses": deleted}

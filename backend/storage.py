@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 import tempfile
 from typing import List, Dict, Tuple, Optional
 import pdfplumber
@@ -10,7 +11,10 @@ import io
 import re
 
 
-UPLOAD_DIR = tempfile.gettempdir()
+PERSIST_BASE = os.path.join(os.path.dirname(__file__), "data")
+PERSIST_UPLOADS = os.path.join(PERSIST_BASE, "uploads")
+PERSIST_COURSES = os.path.join(PERSIST_BASE, "courses")
+UPLOAD_DIR = PERSIST_UPLOADS
 MAX_FILE_SIZE = 20 * 1024 * 1024
 
 
@@ -191,6 +195,23 @@ class FileStorage:
     def __init__(self):
         self.courses: Dict[str, Dict] = {}
         self.chunker = TextChunker()
+        os.makedirs(PERSIST_UPLOADS, exist_ok=True)
+        os.makedirs(PERSIST_COURSES, exist_ok=True)
+
+    def _course_dir(self, course_id: str) -> str:
+        return os.path.join(PERSIST_UPLOADS, course_id)
+
+    def _manifest_path(self, course_id: str) -> str:
+        return os.path.join(PERSIST_COURSES, f"{course_id}.json")
+
+    def _save_manifest(self, course_id: str, processed_files: List[str], all_chunks: List[Dict]):
+        manifest = {
+            "course_id": course_id,
+            "files": processed_files,
+            "chunks": all_chunks,
+        }
+        with open(self._manifest_path(course_id), "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
     
     async def save_and_process_files(
         self, 
@@ -199,6 +220,8 @@ class FileStorage:
         course_id = str(uuid.uuid4())
         processed_files = []
         all_chunks = []
+        saved_files: List[Dict] = []
+        os.makedirs(self._course_dir(course_id), exist_ok=True)
         
         for file_name, file_content, content_type in files:
             if len(file_content) > MAX_FILE_SIZE:
@@ -206,7 +229,8 @@ class FileStorage:
             
             doc_id = str(uuid.uuid4())
             
-            temp_path = os.path.join(UPLOAD_DIR, f"{doc_id}_{file_name}")
+            saved_name = f"{doc_id}_{file_name}"
+            temp_path = os.path.join(self._course_dir(course_id), saved_name)
             with open(temp_path, "wb") as f:
                 f.write(file_content)
             
@@ -224,15 +248,26 @@ class FileStorage:
                     all_chunks.extend(chunks)
                 
                 processed_files.append(file_name)
+                saved_files.append({"file_name": file_name, "saved_name": saved_name})
             finally:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
+                # Keep the uploaded files persisted for future reuse
+                pass
         
         self.courses[course_id] = {
             "course_id": course_id,
             "files": processed_files,
             "chunks": all_chunks,
+            "saved_files": saved_files,
         }
+        # include saved files in manifest
+        manifest = {
+            "course_id": course_id,
+            "files": processed_files,
+            "chunks": all_chunks,
+            "saved_files": saved_files,
+        }
+        with open(self._manifest_path(course_id), "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
         
         return course_id, processed_files, all_chunks
     
@@ -243,6 +278,130 @@ class FileStorage:
     
     def get_course_info(self, course_id: str) -> Optional[Dict]:
         return self.courses.get(course_id)
+
+    def load_existing_courses(self):
+        if not os.path.isdir(PERSIST_COURSES):
+            return
+        for name in os.listdir(PERSIST_COURSES):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(PERSIST_COURSES, name)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                course_id = manifest.get("course_id") or os.path.splitext(name)[0]
+                files = manifest.get("files", [])
+                chunks = manifest.get("chunks", [])
+                saved_files = manifest.get("saved_files", [])
+                self.courses[course_id] = {
+                    "course_id": course_id,
+                    "files": files,
+                    "chunks": chunks,
+                    "saved_files": saved_files,
+                }
+            except Exception:
+                continue
+
+    def get_saved_files(self, course_id: str) -> List[Dict]:
+        info = self.courses.get(course_id)
+        if not info:
+            return []
+        return info.get("saved_files", [])
+
+    def get_file_details(self, course_id: str, saved_name: str) -> Dict:
+        info = self.courses.get(course_id) or {}
+        saved_files = info.get("saved_files", [])
+        original_name = None
+        for sf in saved_files:
+            if sf.get("saved_name") == saved_name:
+                original_name = sf.get("file_name")
+                break
+        base_dir = self._course_dir(course_id)
+        path = os.path.join(base_dir, saved_name)
+        size = os.path.getsize(path) if os.path.exists(path) else 0
+        chunks = info.get("chunks", [])
+        file_chunks = [ch for ch in chunks if ch.get("file_name") == original_name]
+        page_count = 0
+        if file_chunks:
+            try:
+                page_count = max(ch.get("page_number", 0) for ch in file_chunks)
+            except Exception:
+                page_count = 0
+        return {
+            "file_name": original_name or saved_name,
+            "size_bytes": size,
+            "page_count": page_count,
+            "chunk_count": len(file_chunks),
+            "url": f"/files/{course_id}/{saved_name}",
+        }
+
+    def delete_file(self, course_id: str, saved_name: str) -> bool:
+        info = self.courses.get(course_id)
+        if not info:
+            return False
+        saved_files = info.get("saved_files", [])
+        original_name = None
+        new_saved = []
+        for sf in saved_files:
+            if sf.get("saved_name") == saved_name:
+                original_name = sf.get("file_name")
+            else:
+                new_saved.append(sf)
+        base_dir = self._course_dir(course_id)
+        path = os.path.join(base_dir, saved_name)
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        chunks = info.get("chunks", [])
+        remaining_chunks = [ch for ch in chunks if ch.get("file_name") != original_name]
+        files_list = [fn for fn in info.get("files", []) if fn != original_name]
+        self.courses[course_id] = {
+            "course_id": course_id,
+            "files": files_list,
+            "chunks": remaining_chunks,
+            "saved_files": new_saved,
+        }
+        manifest = {
+            "course_id": course_id,
+            "files": files_list,
+            "chunks": remaining_chunks,
+            "saved_files": new_saved,
+        }
+        try:
+            with open(self._manifest_path(course_id), "w", encoding="utf-8") as f:
+                json.dump(manifest, f)
+        except Exception:
+            pass
+        return True
+
+    def delete_all(self) -> int:
+        count = 0
+        for course_id, info in list(self.courses.items()):
+            base_dir = self._course_dir(course_id)
+            try:
+                if os.path.isdir(base_dir):
+                    for name in os.listdir(base_dir):
+                        try:
+                            os.remove(os.path.join(base_dir, name))
+                        except Exception:
+                            pass
+                    try:
+                        os.rmdir(base_dir)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            manifest_path = self._manifest_path(course_id)
+            try:
+                if os.path.exists(manifest_path):
+                    os.remove(manifest_path)
+            except Exception:
+                pass
+            count += 1
+        self.courses = {}
+        return count
 
 
 file_storage = FileStorage()

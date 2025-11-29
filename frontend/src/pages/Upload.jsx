@@ -1,4 +1,76 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
+
+function CourseFiles({ courseId }) {
+  const [files, setFiles] = useState([])
+  const [menuOpen, setMenuOpen] = useState(null)
+  const [details, setDetails] = useState(null)
+  useEffect(() => {
+    const fetchFiles = async () => {
+      try {
+        const res = await fetch(`/api/course-files/${courseId}`)
+        const data = await res.json()
+        setFiles(data.files || [])
+      } catch {}
+    }
+    fetchFiles()
+  }, [courseId])
+  const openUrl = (url) => {
+    const full = new URL(url, window.location.origin).href
+    window.open(full, '_blank')
+  }
+  const getDetails = async (saved_name) => {
+    try {
+      const res = await fetch(`/api/course-file-details/${courseId}/${saved_name}`)
+      const data = await res.json()
+      setDetails(data)
+    } catch {}
+  }
+  const deleteFile = async (saved_name) => {
+    try {
+      await fetch(`/api/course-file/${courseId}/${saved_name}`, { method: 'DELETE' })
+      setMenuOpen(null)
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('courses:refresh'))
+      }
+      const res = await fetch(`/api/course-files/${courseId}`)
+      const data = await res.json()
+      setFiles(data.files || [])
+    } catch {}
+  }
+  if (!files || files.length === 0) return null
+  return (
+    <div style={{ display: 'grid', gap: '8px' }}>
+      {files.map((f, idx) => (
+        <div key={idx} className="file-row" style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', alignItems: 'center', gap: '8px', padding: '8px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px' }}>
+          <div>
+            <a
+              className="inline-link"
+              href={new URL(f.url, window.location.origin).href}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {f.file_name}
+            </a>
+            {typeof f.chunk_count === 'number' && (
+              <span style={{ marginLeft: '8px', opacity: 0.7 }}>({f.chunk_count} chunks)</span>
+            )}
+          </div>
+          <button className="btn-secondary" onClick={() => getDetails(f.saved_name)} style={{ padding: '6px 10px' }}>Details</button>
+          <button className="btn-secondary" onClick={() => deleteFile(f.saved_name)} style={{ padding: '6px 10px' }}>Delete</button>
+        </div>
+      ))}
+      {details && (
+        <div className="card" style={{ width: '100%' }}>
+          <h4>Details</h4>
+          <p><strong>File:</strong> {details.file_name}</p>
+          <p><strong>Size:</strong> {details.size_bytes} bytes</p>
+          <p><strong>Pages:</strong> {details.page_count}</p>
+          <p><strong>Chunks:</strong> {details.chunk_count}</p>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function Upload() {
   const [files, setFiles] = useState([])
@@ -6,6 +78,8 @@ function Upload() {
   const [uploadResult, setUploadResult] = useState(null)
   const [error, setError] = useState(null)
   const fileInputRef = useRef(null)
+  const [courses, setCourses] = useState([])
+  const [successMsg, setSuccessMsg] = useState('')
 
   const handleFileSelect = (e) => {
     const selectedFiles = Array.from(e.target.files)
@@ -53,6 +127,11 @@ function Upload() {
       setFiles([])
       
       localStorage.setItem('lastCourseId', result.course_id)
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('courses:refresh'))
+      }
+      setSuccessMsg('Upload successful')
+      setTimeout(() => setSuccessMsg(''), 3000)
     } catch (err) {
       setError(err.message || 'Upload failed. Please try again.')
     } finally {
@@ -66,6 +145,20 @@ function Upload() {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
   }
 
+  useEffect(() => {
+    const fetchCourses = async () => {
+      try {
+        const res = await fetch('/api/courses')
+        const data = await res.json()
+        setCourses(data.courses || [])
+      } catch {}
+    }
+    fetchCourses()
+    const handler = () => fetchCourses()
+    window.addEventListener('courses:refresh', handler)
+    return () => window.removeEventListener('courses:refresh', handler)
+  }, [])
+
   return (
     <div>
       <div className="card">
@@ -74,12 +167,12 @@ function Upload() {
           Upload PDF, DOCX, PPTX, TXT, or image files to create a study course.
         </p>
 
-        <div 
-          className="file-upload"
-          onClick={() => fileInputRef.current?.click()}
-          onDrop={handleDrop}
-          onDragOver={handleDragOver}
-        >
+      <div 
+        className="file-upload"
+        onClick={() => fileInputRef.current?.click()}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+      >
           <input
             ref={fileInputRef}
             type="file"
@@ -95,6 +188,10 @@ function Upload() {
             Supported: PDF, DOCX, PPTX, TXT, PNG, JPG
           </p>
         </div>
+
+        {successMsg && (
+          <p style={{ color: '#38ef7d', marginTop: '12px' }}>{successMsg}</p>
+        )}
 
         {files.length > 0 && (
           <div className="file-list">
@@ -129,15 +226,22 @@ function Upload() {
         </button>
       </div>
 
-      {uploadResult && (
-        <div className="card" style={{ borderColor: '#38ef7d' }}>
-          <h3 style={{ color: '#38ef7d' }}>Upload Successful!</h3>
-          <p><strong>Course ID:</strong> {uploadResult.course_id}</p>
-          <p><strong>Files:</strong> {uploadResult.files.join(', ')}</p>
-          <p><strong>Chunks Indexed:</strong> {uploadResult.chunks_indexed}</p>
-          <p style={{ marginTop: '20px', opacity: 0.7 }}>
-            You can now create a match in the Lobby using this course.
-          </p>
+      
+
+      {courses.filter(c => (c.files && c.files.length > 0) && (c.chunk_count && c.chunk_count > 0)).length > 0 && (
+        <div className="card">
+          <h3>Uploaded Materials</h3>
+          <div style={{ marginTop: '10px' }}>
+            {courses.filter(c => (c.files && c.files.length > 0) && (c.chunk_count && c.chunk_count > 0)).map((c, i) => (
+              <div key={i} style={{ marginBottom: '12px', opacity: 0.9 }}>
+                <div style={{ marginBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span><strong>Course:</strong> {c.files.length} file(s)</span>
+                  <span style={{ opacity: 0.8 }}>{c.chunk_count} chunks total</span>
+                </div>
+                <CourseFiles courseId={c.course_id} />
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

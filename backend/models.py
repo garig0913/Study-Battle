@@ -101,6 +101,16 @@ class VerificationResult(BaseModel):
     citation: List[SourceChunk]
 
 
+class ChatRequest(BaseModel):
+    course_id: str
+    question: str
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    citation: Optional[List[SourceChunk]] = None
+
+
 class Player(BaseModel):
     name: str
     hp: int = 100
@@ -115,6 +125,7 @@ class CurrentRound(BaseModel):
     start_time: float
     time_limit: int
     answers_received: Dict[str, Any] = {}
+    skipped_by: List[str] = []
 
 
 class Match(BaseModel):
